@@ -11,10 +11,10 @@ use constant {
 	DEAD_PROXY    => 0,
 	HTTP_PROXY    => 1,
 	SOCKS4_PROXY  => 2,
-	SOCKS5_PROXY  => 3,
+	SOCKS5_PROXY  => 4,
 };
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY);
 our %EXPORT_TAGS = (types => [qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY)]);
@@ -77,18 +77,34 @@ sub strict
 
 sub get
 { # get proxy type
-	my ($self, $proxyaddr, $proxyport) = @_;
+	my ($self, $proxyaddr, $proxyport, $checkmask) = @_;
 	
-	unless(defined($proxyport)) {
-		($proxyaddr, $proxyport) = _parse_proxyaddr($proxyaddr)
-			or return DEAD_PROXY;
+	unless(defined($checkmask)) {
+		# (host, port) or (host:port, [mask])
+		if(my ($host, $port) = _parse_proxyaddr($proxyaddr)) {
+			# (host:port, [mask])
+			$checkmask = $proxyport;
+			$proxyaddr = $host;
+			$proxyport = $port;
+		}
+		elsif(!defined($proxyport)) {
+			# (host) - no port defined - error
+			return DEAD_PROXY;
+		}
 	}
 	
-	my %checkers = (&HTTP_PROXY => \&is_http, &SOCKS4_PROXY => \&is_socks4, &SOCKS5_PROXY => \&is_socks5);
-	foreach my $type (keys %checkers) {
-		my $ok = $checkers{$type}->($self, $proxyaddr, $proxyport);
+	my @checkers = (HTTP_PROXY, \&is_http, SOCKS4_PROXY, \&is_socks4, SOCKS5_PROXY, \&is_socks5);
+
+	for(my $i=0; $i<@checkers; $i+=2) {
+		if(defined($checkmask)) {
+			unless($checkers[$i] & $checkmask) {
+				next;
+			}
+		}
+		
+		my $ok = $checkers[$i+1]->($self, $proxyaddr, $proxyport);
 		if($ok) {
-			return $type;
+			return $checkers[$i];
 		}
 		elsif(!defined($ok)) {
 			return DEAD_PROXY;
@@ -371,7 +387,7 @@ sub _open_socket
 sub _parse_proxyaddr
 { # parse proxy address like this one: localhost:8080 -> host=localhost, port=8080
 	my ($proxyaddr) = @_;
-	my ($host, $port) = $proxyaddr =~ /^([^:]+)(?::(\d+))?$/
+	my ($host, $port) = $proxyaddr =~ /^([^:]+):(\d+)$/
 		or return ();
 		
 	return ($host, $port);
@@ -491,11 +507,21 @@ Options description:
    socks5_strict   - use or not strict method to check socks5 proxyes
    strict          - set value of all *_strict options above to this value (about strict checking see below)
 
-=item $proxytype->get($proxyaddress)
+=item $proxytype->get($proxyaddress, $checkmask=undef)
 
-=item $proxytype->get($proxyhost, $proxyport)
+=item $proxytype->get($proxyhost, $proxyport, $checkmask=undef)
 
-Get proxy type. Returned value is one of the module constants descibed below.
+Get proxy type. Checkmask allows to check proxy only for specified types, its value can be any 
+combination of the valid proxy types constants (HTTP_PROXY, SOCKS4_PROXY, SOCKS5_PROXY for now),
+joined with the binary OR (|) operator. Will check for all types if mask not defined. Returned
+value is one of the module constants descibed below.
+
+Example:
+
+  # check only for socks type
+  # if it is HTTP_PROXY returned value will be UNKNOWN_PROXY
+  # because there is no check for HTTP_PROXY
+  my $type = $proxytype->get('localhost:1080', SOCKS4_PROXY | SOCKS5_PROXY);
 
 =item $proxytype->is_http($proxyaddress)
 
@@ -548,19 +574,19 @@ Methods below gets or sets corresponding options from the constructor:
 
 =item $proxytype->http_strict($boolean)
 
-=item $proxytype->sock4_strict
+=item $proxytype->socks4_strict
 
-=item $proxytype->sock4_strict($boolean)
+=item $proxytype->socks4_strict($boolean)
 
-=item $proxytype->sock5_strict
+=item $proxytype->socks5_strict
 
-=item $proxytype->sock5_strict($boolean)
+=item $proxytype->socks5_strict($boolean)
 
 =back
 
 =head2 STRICT CHECKING
 
-How this module works? To check proxy type it simply do some request to the proxy server and checks response. Each proxy
+How does this module work? To check proxy type it simply do some request to the proxy server and checks response. Each proxy
 type have its own response type. For socks proxyes we can do socks initialize request and response should be as its
 described in socks proxy documentation. For http proxyes we can do http request to some host and check for example
 if response begins from `HTTP'. Problem is that if we, for example, will check `yahoo.com:80' for http proxy this way,
