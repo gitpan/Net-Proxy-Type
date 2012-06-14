@@ -15,7 +15,7 @@ use constant {
 	SOCKS5_PROXY  =>  4,
 };
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY);
 our %EXPORT_TAGS = (types => [qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY)]);
@@ -52,7 +52,7 @@ sub new
 	bless $self, $class;
 }
 
-foreach my $key qw(connect_timeout write_timeout read_timeout http_strict socks4_strict socks5_strict keyword noauth)
+foreach my $key (qw(connect_timeout write_timeout read_timeout http_strict socks4_strict socks5_strict keyword noauth))
 { # generate sub's for get/set object properties using closure
       no strict 'refs';
       *$key = sub
