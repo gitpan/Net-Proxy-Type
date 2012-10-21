@@ -1,26 +1,26 @@
----
-abstract: 'Get proxy type'
+--- #YAML:1.0
+name:               Net-Proxy-Type
+version:            0.06
+abstract:           Get proxy type
 author:
-  - 'Oleg G <oleg@cpan.org>'
-build_requires:
-  ExtUtils::MakeMaker: 0
+    - Oleg G <oleg@cpan.org>
+license:            perl
+distribution_type:  module
 configure_requires:
-  ExtUtils::MakeMaker: 0
-dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.112150'
-license: perl
-meta-spec:
-  url: http://module-build.sourceforge.net/META-spec-v1.4.html
-  version: 1.4
-name: Net-Proxy-Type
-no_index:
-  directory:
-    - t
-    - inc
+    ExtUtils::MakeMaker:  0
+build_requires:
+    ExtUtils::MakeMaker:  0
 requires:
-  Exporter: 0
-  IO::Select: 0
-  IO::Socket::INET: 0
+    Exporter:          0
+    IO::Select:        0
+    IO::Socket::INET:  0
 resources:
-  repository: https://github.com/olegwtf/p5-Net-Proxy-Type
-version: 0.05
+    repository:  https://github.com/olegwtf/p5-Net-Proxy-Type
+no_index:
+    directory:
+        - t
+        - inc
+generated_by:       ExtUtils::MakeMaker version 6.57_05
+meta-spec:
+    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
+    version:  1.4

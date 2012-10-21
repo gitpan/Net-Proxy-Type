@@ -13,22 +13,27 @@ use constant {
 	HTTP_PROXY    =>  1,
 	SOCKS4_PROXY  =>  2,
 	SOCKS5_PROXY  =>  4,
+	HTTPS_PROXY   =>  8
 };
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 our @ISA = qw(Exporter);
-our @EXPORT_OK = qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY);
-our %EXPORT_TAGS = (types => [qw(HTTP_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY)]);
+our @EXPORT_OK = qw(HTTP_PROXY HTTPS_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY);
+our %EXPORT_TAGS = (types => [qw(HTTP_PROXY HTTPS_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY)]);
 
 our $CONNECT_TIMEOUT = 5;
 our $WRITE_TIMEOUT = 5;
 our $READ_TIMEOUT = 5;
 our $URL = 'http://www.google.com/';
+our $HTTPS_URL = 'https://www.google.com/';
 our $KEYWORD = 'google';
+our $HTTPS_KEYWORD = 'google';
+our $HTTP_VER = '1.1';
 our %NAME = (
 	UNKNOWN_PROXY, 'UNKNOWN_PROXY',
 	DEAD_PROXY, 'DEAD_PROXY',
 	HTTP_PROXY, 'HTTP_PROXY',
+	HTTPS_PROXY, 'HTTPS_PROXY',
 	SOCKS4_PROXY, 'SOCKS4_PROXY',
 	SOCKS5_PROXY, 'SOCKS5_PROXY',
 );
@@ -36,23 +41,29 @@ our %NAME = (
 sub new
 {
 	my ($class, %opts) = @_;
-	my $self = {};
+	my $self = bless {}, $class;
 	
 	$self->{connect_timeout} = $opts{connect_timeout} || $opts{timeout} || $CONNECT_TIMEOUT;
 	$self->{write_timeout} = $opts{write_timeout} || $opts{timeout} || $WRITE_TIMEOUT;
 	$self->{read_timeout} = $opts{read_timeout} || $opts{timeout} || $READ_TIMEOUT;
 	$self->{http_strict} = $opts{http_strict} || $opts{strict};
+	$self->{https_strict} = $opts{https_strict} || $opts{strict};
 	$self->{socks4_strict} = $opts{socks4_strict} || $opts{strict};
 	$self->{socks5_strict} = $opts{socks5_strict} || $opts{strict};
-	$self->{url} = $opts{url} || $URL;
-	($self->{host}) = $self->{url} =~ m!^https?://([^:/]+)! or croak('Incorrect url specified. Should be https?://[^:/]+');
+	$self->{http_ver} = $opts{http_ver} || $HTTP_VER;
 	$self->{keyword} = $opts{keyword} || $KEYWORD;
+	$self->{https_keyword} = $opts{https_keyword} || $HTTPS_KEYWORD;
 	$self->{noauth} = $opts{noauth};
+	$self->url($opts{url} || $URL);
+	$self->https_url($opts{https_url} || $HTTPS_URL);
 	
-	bless $self, $class;
+	$self;
 }
 
-foreach my $key (qw(connect_timeout write_timeout read_timeout http_strict socks4_strict socks5_strict keyword noauth))
+foreach my $key (qw(
+	connect_timeout write_timeout read_timeout http_strict https_strict 
+	socks4_strict socks5_strict keyword https_keyword noauth http_ver
+))
 { # generate sub's for get/set object properties using closure
       no strict 'refs';
       *$key = sub
@@ -78,6 +89,7 @@ sub strict
 	my ($self, $strict) = @_;
 	
 	$self->{http_strict} = $strict;
+	$self->{https_strict} = $strict;
 	$self->{socks4_strict} = $strict;
 	$self->{socks5_strict} = $strict;
 }
@@ -87,11 +99,25 @@ sub url
 	my $self = shift;
 	
 	if(defined($_[0])) {
-		($self->{host}) = $_[0] =~ m!^https?://([^:/]+)! or croak('Incorrect url specified. Should be https?://[^:/]+');
+		($self->{host}) = $_[0] =~ m!^http://([^:/]+)!
+			or croak('Incorrect url specified. Should be http://[^:/]+');
 		return $self->{url} = $_[0];
 	}
 	
 	return $self->{url};
+}
+
+sub https_url
+{ # set or get https url
+	my $self = shift;
+	
+	if(defined($_[0])) {
+		($self->{https_host}, $self->{https_pathquery}) = $_[0] =~ m!^https://([^:/]+)(/.*)?!
+			or croak('Incorrect url specified. Should be https://[^:/]+(/.*)?');
+		return $self->{https_url} = $_[0];
+	}
+	
+	return $self->{https_url};
 }
 
 sub get
@@ -112,7 +138,7 @@ sub get
 		}
 	}
 	
-	my @checkers = (HTTP_PROXY, \&is_http, SOCKS4_PROXY, \&is_socks4, SOCKS5_PROXY, \&is_socks5);
+	my @checkers = (HTTPS_PROXY, \&is_https, HTTP_PROXY, \&is_http, SOCKS4_PROXY, \&is_socks4, SOCKS5_PROXY, \&is_socks5);
 	my $con_time = 0;
 	
 	for(my $i=0; $i<@checkers; $i+=2) {
@@ -161,14 +187,20 @@ sub is_http
 	my ($buf, $rc);
 	unless($self->{http_strict}) {
 		# simple check. does response begins from `HTTP'?
-		$rc = $self->_read_from_socket($socket, $buf, 4);
-		if(!$rc || $buf ne 'HTTP') {
+		$rc = $self->_read_from_socket($socket, $buf, 12);
+		my ($code) = $buf =~ /(\d+$)/;
+		if ($code == 407 && $self->{noauth}) {
+			# proxy auth required
+			goto IS_HTTP_ERROR;
+		}
+		
+		if(!$rc || substr($buf, 0, 4) ne 'HTTP') {
 			goto IS_HTTP_ERROR;
 		}
 	}
 	else {
 		# strict check. does response header contains keyword?
-		unless($self->_is_strict_response($socket)) {
+		unless($self->_is_strict_response($socket, $self->{keyword})) {
 			goto IS_HTTP_ERROR;
 		}
 	}
@@ -177,6 +209,60 @@ sub is_http
 	return wantarray ? (1, $con_time) : 1;
 	
 	IS_HTTP_ERROR:
+		$socket->close();
+		return wantarray ? (0, $con_time) : 0;
+}
+
+sub is_https
+{ # check is this https proxy
+	my ($self, $proxyaddr, $proxyport) = @_;
+	
+	my ($socket, $con_time) = $self->_create_socket($proxyaddr, $proxyport)
+		or return;
+	
+	unless (
+		$self->_write_to_socket(
+			$socket, 'CONNECT '.$self->{https_host}.':443 HTTP/1.1'.CRLF.'Host: '.$self->{https_host}.':443'.CRLF.CRLF
+		)
+	) {
+		goto IS_HTTPS_ERROR;
+	}
+	
+	$self->_read_from_socket($socket, my $headers, CRLF.CRLF, 2000)
+		or goto IS_HTTPS_ERROR;
+	my ($code) = $headers =~ m!^HTTP/\d.\d (\d{3})!
+		or goto IS_HTTPS_ERROR;
+	if ($code == 407 && ($self->{noauth} || $self->{https_strict})) {
+		goto IS_HTTPS_ERROR;
+	}
+	if (($code < 200 || $code >= 300) && $code != 407) {
+		goto IS_HTTPS_ERROR;
+	}
+	
+	if ($self->{https_strict}) {
+		require IO::Socket::SSL;
+		$socket->blocking(1);
+		
+		unless (IO::Socket::SSL->start_SSL($socket, Timeout => $self->{read_timeout})) {
+			goto IS_HTTPS_ERROR;
+		}
+		
+		$socket->blocking(0);
+		$self->_write_to_socket(
+			$socket, 
+			'GET ' . ($self->{https_pathquery}||'/') . ' HTTP/' . $self->{http_ver} . CRLF . 'Host: ' . $self->{https_host} .
+			CRLF . CRLF
+		) or goto IS_HTTPS_ERROR;
+		
+		unless ($self->_is_strict_response($socket, $self->{https_keyword})) {
+			goto IS_HTTPS_ERROR;
+		}
+	}
+	
+	$socket->close();
+	return wantarray ? (1, $con_time) : 1;
+	
+	IS_HTTPS_ERROR:
 		$socket->close();
 		return wantarray ? (0, $con_time) : 0;
 }
@@ -204,7 +290,7 @@ sub is_socks4
 			goto IS_SOCKS4_ERROR;
 		}
 		
-		unless($self->_is_strict_response($socket)) {
+		unless($self->_is_strict_response($socket, $self->{keyword})) {
 			goto IS_SOCKS4_ERROR;
 		}
 	}
@@ -263,7 +349,7 @@ sub is_socks5
 				goto IS_SOCKS5_ERROR;
 			}
 		
-			unless($self->_is_strict_response($socket)) {
+			unless($self->_is_strict_response($socket, $self->{keyword})) {
 				goto IS_SOCKS5_ERROR;
 			}
 		}
@@ -280,53 +366,25 @@ sub is_socks5
 sub _http_request
 { # do http request for some host
 	my ($self, $socket) = @_;
-	$self->_write_to_socket($socket, 'GET ' . $self->{url} . ' HTTP/1.0'. CRLF . 'Host: ' . $self->{host} . CRLF . CRLF);
+	$self->_write_to_socket(
+		$socket, 'GET ' . $self->{url} . ' HTTP/' . $self->{http_ver} . CRLF . 'Host: ' . $self->{host} . CRLF . CRLF
+	);
 }
 
 sub _is_strict_response
 { # to make sure about proxy type we will read response header and try to find keyword
   # without this check most of http servers may be recognized as http proxy, because its response after _http_request() begins from `HTTP'
-	my ($self, $socket) = @_;
-	my ($header, $rc, $buf, $http_ok);
+	my ($self, $socket, $keyword) = @_;
 	
-	while(1) {
-		$rc = $self->_read_from_socket($socket, $buf, 20);
-		unless(defined($rc)) {
-			last;
-		}
-		else {
-			unless($http_ok) {
-				if(index($buf, 'HTTP') != 0) {
-					last;
-				}
-				
-				$http_ok = 1;
-			}
-			
-			$header .= $buf;
-			if(index($header, $self->{keyword}) != -1) {
-				# keyword found - ok
-				return 1;
-			}
-				
-			if($rc == 0) {
-				# no more data in the socket, keyword not found
-				last;
-			}
-				
-			if(index($header, CRLF . CRLF) != -1) {
-				# header received, but no keyword found
-				last;
-			}
-				
-			if(length($header) > 2000) {
-				# hmm, too big header
-				last;
-			}
-		}
+	$self->_read_from_socket($socket, my $headers, CRLF.CRLF, 4096)
+		or return 0;
+	my ($code) = $headers =~ m!^HTTP/\d\.\d (\d{3})!
+		or return 0;
+	if ((caller(1))[3] eq __PACKAGE__.'::is_http' && $code == 407 && $self->{noauth}) {
+		return 0;
 	}
 	
-	return 0;
+	return index($headers, $keyword) != -1;
 }
 
 sub _write_to_socket
@@ -361,29 +419,39 @@ sub _write_to_socket
 
 sub _read_from_socket
 { # read $limit bytes from non-blocking socket; return 0 if EOF, undef if error, bytes readed on success ($limit)
-	my ($self, $socket, $limit) = @_[0,1,3];
+	my ($self, $socket) = (shift, shift);
+	my $num_limit;
+	my $str_limit;
+	if (@_ == 2) {
+		$num_limit = pop;
+	}
+	else {
+		($str_limit, $num_limit) = @_[1,2];
+	}
 	
+	my $limit_idx;
 	my $selector = IO::Select->new($socket);
 	my $start = time();
-	my $buf;
-	$_[2] = ''; # clean buffer variable like sysread() do
+	$_[0] = ''; # clean buffer variable like sysread() do
 	
-	while($limit > 0 && time() - $start < $self->{read_timeout}) {
+	while(time() - $start < $self->{read_timeout}) {
 		unless($selector->can_read(1)) {
-			# no data in socket for now, check if timeout expired and try again
+			# no data in socket for now, check is timeout expired and try again
 			next;
 		}
 		
-		my $rc = $socket->sysread($buf, $limit);
+		my $rc = $socket->sysread($_[0], $num_limit, length $_[0]);
 		if(defined($rc)) {
 			# no errors
 			if($rc > 0) {
-				# reduce limit and modify buffer
-				$limit -= $rc;
-				$_[2] .= $buf;
-				if($limit == 0) {
-					# all data successfully readed
-					return length($_[2]);
+				$num_limit -= $rc;
+				
+				if ($num_limit == 0 || (defined $str_limit && ($limit_idx = index($_[0], $str_limit)) != -1)) {
+					if (defined $limit_idx && $limit_idx >= 0) {
+						# cut off all after $str_limit
+						substr($_[0], $limit_idx+length($str_limit)) = '';
+					}
+					return length($_[0]);
 				}
 			}
 			else {
@@ -416,7 +484,7 @@ sub _create_socket
 }
 
 sub _open_socket
-{ # open non-blocking socket
+{ # blocking open for non-blocking socket
 	my ($self, $host, $port) = @_;
 	my $socket = IO::Socket::INET->new(PeerHost => $host, PeerPort => $port, Timeout => $self->{connect_timeout}, Blocking => 0);
 	
@@ -481,9 +549,12 @@ Net::Proxy::Type - Get proxy type
  	warn "$proxy1 is unknown proxy";
  }
  
- # get proxy type and do something depending returned value
+ # get proxy type and do something depending on returned value
  my $type = $proxytype->get($proxy2);
- if($type == HTTP_PROXY) {
+ if ($type == HTTPS_PROXY) {
+ 	warn "$proxy2 is https proxy";
+ }
+ elsif($type == HTTP_PROXY) {
  	warn "$proxy2 is http proxy";
  }
  elsif($type == SOCKS4_PROXY) {
@@ -505,10 +576,10 @@ Net::Proxy::Type - Get proxy type
  	warn "$proxy3 is http proxy";
  }
  elsif(defined($rv)) {
- 	warn "$proxy3 is not http proxy, but it works";
+ 	warn "$proxy3 is not http proxy, but it is connectable";
  }
  else {
- 	warn "$proxy3 doesn't work";
+ 	warn "can't connect to $proxy3";
  }
 
 =back
@@ -516,7 +587,7 @@ Net::Proxy::Type - Get proxy type
 =head1 DESCRIPTION
 
 The C<Net::Proxy::Type> is a module which can help you to get proxy type if you know host and port of the proxy server.
-Supported proxy types for now are: http proxy, socks4 proxy and socks5 proxy.
+Supported proxy types for now are: http proxy, https proxy, socks4 proxy and socks5 proxy.
 
 =head1 METHODS
 
@@ -534,12 +605,16 @@ to specify the initial state. The following options correspond to attribute meth
    read_timeout         $Net::Proxy::Type::READ_TIMEOUT 
    timeout              undef
    http_strict          undef
+   https_strict         undef
    socks4_strict        undef
    socks5_strict        undef
    strict               undef
    url                  $Net::Proxy::Type::URL
+   https_url            $Net::Proxy::Type::HTTPS_URL
    keyword              $Net::Proxy::Type::KEYWORD
+   https_keyword        $Net::Proxy::Type::HTTPS_KEYWORD
    noauth               undef
+   http_ver             $Net::Proxy::Type::HTTP_VER
 
 Description:
 
@@ -548,19 +623,23 @@ Description:
    read_timeout    - maximum number of seconds to wait until read operation success
    timeout         - set value of all *_timeout options above to this value
    http_strict     - use or not strict method to check http proxies
+   https_strict    - use or not strict method to check https proxies
    socks4_strict   - use or not strict method to check socks4 proxies
    socks5_strict   - use or not strict method to check socks5 proxies
    strict          - set value of all *_strict options above to this value (about strict checking see below)
-   url             - url which header should be checked for keyword when strict mode enabled
-   keyword         - keyword which must be found in the url header
+   url             - url which response header should be checked for keyword when strict mode enabled (for all proxy types excluding HTTPS_PROXY)
+   https_url       - url which response header should be checked for https_keyword when strict mode enabled (for HTTPS_PROXY only)
+   keyword         - keyword which must be found in the respose header for url (for all types excluding HTTPS_PROXY)
+   https_keyword   - keyword which must be found in the respose header for url (for HTTPS_PROXY only)
    noauth          - if proxy works, but authorization required, then false will be returned if noauth has true value
+   http_ver        - http version which will be used in http request when strict mode is on (one of 0.9, 1.0, 1.1), default is 1.1
 
 =item $proxytype->get($proxyaddress, $checkmask=undef)
 
 =item $proxytype->get($proxyhost, $proxyport, $checkmask=undef)
 
 Get proxy type. Checkmask allows to check proxy only for specified types, its value can be any 
-combination of the valid proxy types constants (HTTP_PROXY, SOCKS4_PROXY, SOCKS5_PROXY for now),
+combination of the valid proxy types constants (HTTPS_PROXY, HTTP_PROXY, SOCKS4_PROXY, SOCKS5_PROXY for now),
 joined with the binary OR (|) operator. Will check for all types if mask not defined. In scalar
 context returned value is proxy type - one of the module constants descibed below. In list context
 returned value is an array with proxy type as first element and connect time in seconds as second.
@@ -568,8 +647,8 @@ returned value is an array with proxy type as first element and connect time in 
 Example:
 
   # check only for socks type
-  # if it is HTTP_PROXY returned value will be UNKNOWN_PROXY
-  # because there is no check for HTTP_PROXY
+  # if it is HTTP_PROXY or HTTPS_PROXY returned value will be UNKNOWN_PROXY
+  # because there is no check for HTTP_PROXY and HTTPS_PROXY
   my $type = $proxytype->get('localhost:1080', SOCKS4_PROXY | SOCKS5_PROXY);
 
 =item $proxytype->get_as_string($proxyaddress, $checkmask=undef)
@@ -585,6 +664,12 @@ Same as get(), but returns string instead of constant. In all contexts returns o
 Check is this is http proxy. Returned value is 1 if it is http proxy, 0 if it is not http proxy
 and undef if proxy host not connectable or proxy address is not valid. In list context returns array
 where second element is connect time (empty array if proxy not connectable).
+
+=item $proxytype->is_https($proxyhost, $proxyport)
+
+Check is this is https proxy (http proxy which accepts CONNECT method). Returned value is 1 if it is https proxy, 0 if
+it is not https proxy and undef if proxy host not connectable or proxy address is not valid. In list
+context returns array where second element is connect time (empty array if proxy not connectable).
 
 =item $proxytype->is_socks4($proxyaddress)
 
@@ -632,6 +717,10 @@ Methods below gets or sets corresponding options from the constructor:
 
 =item $proxytype->http_strict($boolean)
 
+=item $proxytype->https_strict
+
+=item $proxytype->https_strict($boolean)
+
 =item $proxytype->socks4_strict
 
 =item $proxytype->socks4_strict($boolean)
@@ -640,11 +729,29 @@ Methods below gets or sets corresponding options from the constructor:
 
 =item $proxytype->socks5_strict($boolean)
 
+=item $proxytype->url
+
 =item $proxytype->url($url)
+
+=item $proxytype->https_url
+
+=item $proxytype->https_url($url)
+
+=item $proxytype->keyword
 
 =item $proxytype->keyword($keyword)
 
+=item $proxytype->https_keyword
+
+=item $proxytype->https_keyword($keyword)
+
+=item $proxytype->noauth
+
 =item $proxytype->noauth($boolean)
+
+=item $proxytype->http_ver
+
+=item $proxytype->http_ver($version)
 
 =back
 
@@ -652,9 +759,9 @@ Methods below gets or sets corresponding options from the constructor:
 
 How this module works? To check proxy type it simply do some request to the proxy server and checks response. Each proxy
 type has its own response type. For socks proxies we can do socks initialize request and response should be as its
-described in socks proxy documentation. For http proxies we can do http request to some host and check for example
-if response begins from `HTTP'. Problem is that if we, for example, will check `yahoo.com:80' for http proxy this way,
-we will get positive response, but `yahoo.com' is not a proxy it is a web server. So strict checking helps us to avoid this
+described in socks proxy documentation (same for https proxy). For http proxies we can do http request to some host and 
+check for example if response begins from `HTTP'. Problem is that if we, for example, will check `yahoo.com:80' for http proxy 
+this way, we will get positive response, but `yahoo.com' is not a proxy it is a web server. So strict checking helps us to avoid this
 problems. What we do? We send http request to the server, specified by the `url' option in the constructor via proxy and checks
 if response header contains keyword, specified by `keyword' option. If there is no keyword in the header it means
 that this proxy is not of the cheking type. This is not best solution, but it works. So strict mode recommended
@@ -672,6 +779,8 @@ Following proxy type constants available and could be imported separately or tog
 =item DEAD_PROXY
 
 =item HTTP_PROXY
+
+=item HTTPS_PROXY
 
 =item SOCKS4_PROXY
 
@@ -691,7 +800,13 @@ Following variables available (not importable):
 
 =item $URL = 'http://www.google.com/'
 
+=item $HTTPS_URL = 'https://www.google.com/'
+
 =item $KEYWORD = 'google'
+
+=item $HTTPS_KEYWORD = 'google'
+
+=item $HTTP_VER = '1.1'
 
 =item %NAME
 
@@ -701,7 +816,7 @@ Dictionary between proxy type constant and proxy type name
 
 =head1 COPYRIGHT
 
-Copyright 2010-2011 Oleg G <oleg@cpan.org>.
+Copyright 2010-2012 Oleg G <oleg@cpan.org>.
 
 This library is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
