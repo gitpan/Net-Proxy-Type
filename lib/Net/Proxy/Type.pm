@@ -2,7 +2,7 @@ package Net::Proxy::Type;
 
 use strict;
 use Exporter;
-use Errno qw(EWOULDBLOCK);
+use Errno qw(EWOULDBLOCK EAGAIN);
 use Carp;
 use IO::Socket::INET qw(:DEFAULT :crlf);
 use IO::Select;
@@ -16,7 +16,7 @@ use constant {
 	HTTPS_PROXY   =>  8
 };
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(HTTP_PROXY HTTPS_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY);
 our %EXPORT_TAGS = (types => [qw(HTTP_PROXY HTTPS_PROXY SOCKS4_PROXY SOCKS5_PROXY UNKNOWN_PROXY DEAD_PROXY)]);
@@ -378,7 +378,7 @@ sub _is_strict_response
 	
 	$self->_read_from_socket($socket, my $headers, CRLF.CRLF, 4096)
 		or return 0;
-	my ($code) = $headers =~ m!^HTTP/\d\.\d (\d{3})!
+	my ($code) = $headers =~ m!HTTP/\d\.\d (\d{3})!
 		or return 0;
 	if ((caller(1))[3] eq __PACKAGE__.'::is_http' && $code == 407 && $self->{noauth}) {
 		return 0;
@@ -390,6 +390,8 @@ sub _is_strict_response
 sub _write_to_socket
 { # write data to non-blocking socket; return 1 on success, 0 on failure (timeout or other error)
 	my ($self, $socket, $msg) = @_;
+	
+	local $SIG{PIPE} = 'IGNORE';
 	
 	my $selector = IO::Select->new($socket);
 	my $start = time();
@@ -408,7 +410,7 @@ sub _write_to_socket
 				return 1;
 			}
 		}
-		elsif($! != EWOULDBLOCK) {
+		elsif($! != EWOULDBLOCK && $! != EAGAIN) {
 			# some error in the socket; will return false
 			last;
 		}
@@ -459,7 +461,7 @@ sub _read_from_socket
 				return 0;
 			}
 		}
-		elsif($! != EWOULDBLOCK) {
+		elsif($! != EWOULDBLOCK && $! != EAGAIN) {
 			last;
 		}
 	}
